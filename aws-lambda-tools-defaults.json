@@ -10,6 +10,17 @@
   "configuration": "Release",
   "function-runtime": "dotnet8",
   "function-memory-size": 512,
-  "function-timeout": 30,
-  "function-handler": "Tender_AI_Tagging_Lambda::Tender_AI_Tagging_Lambda.Function::FunctionHandler"
+  "function-timeout": 240,
+  "function-handler": "Tender_AI_Tagging_Lambda::Tender_AI_Tagging_Lambda.Function::FunctionHandler",
+  "framework": "net8.0",
+  "function-name": "TenderAITaggingLambda",
+  "function-description": "AI Tagging Service: Consumes summarized tenders, clears old tags, and generates new content tags using AWS Bedrock (Claude 3 Sonnet) and rules from Parameter Store. Routes enriched data to the WriteQueue.",
+  "package-type": "Zip",
+  "function-role": "arn:aws:iam::211635102441:role/AI_Lambda_Role",
+  "function-architecture": "x86_64",
+  "function-subnets": "",
+  "function-security-groups": "",
+  "tracing-mode": "PassThrough",
+  "environment-variables": "\u0022SOURCE_QUEUE_URL\u0022=\u0022https://sqs.us-east-1.amazonaws.com/211635102441/TagQueue.fifo\u0022;\u0022FAILED_QUEUE_URL\u0022=\u0022https://sqs.us-east-1.amazonaws.com/211635102441/TagFailedQueue.fifo\u0022;\u0022WRITE_QUEUE_URL\u0022=\u0022https://sqs.us-east-1.amazonaws.com/211635102441/WriteQueue.fifo\u0022",
+  "image-tag": ""
 }
