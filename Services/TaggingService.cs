@@ -30,6 +30,9 @@ namespace Tender_AI_Tagging_Lambda.Services
         private const int MaxRetryAttempts = 4; // Adjusted retry attempts for tagging
         private const int BaseDelayMs = 500;   // Adjusted base delay
 
+        // Concurrency control for Bedrock
+        private static readonly SemaphoreSlim _rateLimitSemaphore = new(1, 1); // Max 1 concurrent request per Lambda
+
         public TaggingService(IAmazonBedrockRuntime bedrockClient, IConfigService configService, ILogger<TaggingService> logger)
         {
             _bedrockClient = bedrockClient ?? throw new ArgumentNullException(nameof(bedrockClient));
@@ -60,9 +63,19 @@ namespace Tender_AI_Tagging_Lambda.Services
                 string inputText = PrepareInputText(tenderMessage);
                 if (!string.IsNullOrWhiteSpace(inputText))
                 {
-                    string rawTagString = await ExecuteBedrockRequestWithRetryAsync(combinedPrompt, inputText, tenderMessage.TenderNumber ?? "Unknown");
-                    bedrockTags = ParseBedrockTagResponse(rawTagString);
-                    _logger.LogDebug("Bedrock generated {Count} raw tags for TenderNumber: {TenderNumber}", bedrockTags.Count, tenderMessage.TenderNumber);
+                    // WRAP THE BEDROCK CALL IN THE SEMAPHORE
+                    await _rateLimitSemaphore.WaitAsync(); // Wait for our turn
+
+                    try
+                    {
+                        string rawTagString = await ExecuteBedrockRequestWithRetryAsync(combinedPrompt, inputText, tenderMessage.TenderNumber ?? "Unknown");
+                        bedrockTags = ParseBedrockTagResponse(rawTagString);
+                        _logger.LogDebug("Bedrock generated {Count} raw tags for TenderNumber: {TenderNumber}", bedrockTags.Count, tenderMessage.TenderNumber);
+                    }
+                    finally
+                    {
+                        _rateLimitSemaphore.Release(); // Always release the semaphore
+                    }
                 }
                 else
                 {
