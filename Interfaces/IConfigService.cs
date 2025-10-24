@@ -38,5 +38,13 @@ namespace Tender_AI_Tagging_Lambda.Interfaces
         /// <exception cref="KeyNotFoundException">Thrown if the tag map parameter is not found.</exception>
         /// <exception cref="System.Text.Json.JsonException">Thrown if the tag map parameter value is invalid JSON.</exception>
         Task<Dictionary<string, string>> GetTagMapAsync();
+
+        /// <summary>
+        /// Retrieves the list of master categorization tags.
+        /// Fetches the list from AWS Parameter Store and caches it.
+        /// </summary>
+        /// <returns>A list of master category tags.</returns>
+        /// <exception cref="KeyNotFoundException">Thrown if the master tag list parameter is not found.</exception>
+        Task<List<string>> GetMasterCategoryTagsAsync();
     }
 }

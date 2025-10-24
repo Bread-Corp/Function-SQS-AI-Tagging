@@ -26,11 +26,13 @@ namespace Tender_AI_Tagging_Lambda.Services
         private const string TaggingSourcePromptPrefix = "Tagging"; // e.g., TaggingEskom
         private const string BlocklistParamName = "/tenders/ai-processor/tag-blocklist";
         private const string TagMapParamName = "/tenders/ai-processor/tag-map";
+        private const string MasterTagListParamName = "/tenders/ai-processor/master-tag-categories"; // Parameter name for Master Tag List
 
         // Static cache using ConcurrentDictionary for thread safety
         private static readonly ConcurrentDictionary<string, object> _configCache = new();
         private const string BlocklistCacheKey = "config_Blocklist";
         private const string TagMapCacheKey = "config_TagMap";
+        private const string MasterTagListCacheKey = "config_MasterTagList"; // Cache key for Master Tag List
 
         public ConfigService(IAmazonSimpleSystemsManagement ssmClient, ILogger<ConfigService> logger)
         {
@@ -55,7 +57,12 @@ namespace Tender_AI_Tagging_Lambda.Services
             // Fetch source-specific prompt (cache handled internally)
             string sourcePrompt = await EnsurePromptCachedAsync($"{TaggingSourcePromptPrefix}{sourceType}", sourcePromptKey);
 
-            string combinedPrompt = $"{systemPrompt}\n\n{sourcePrompt}";
+            // Fetch master tag list (cache handled internally)
+            var masterTags = await GetMasterCategoryTagsAsync();
+            string masterTagListString = string.Join(", ", masterTags.Select(t => $"\"{t}\""));
+
+            // Inject master tag list into the combined prompt
+            string combinedPrompt = $"{systemPrompt}\n\nMASTER TAG LIST: [{masterTagListString}]\n\n{sourcePrompt}";
 
             _logger.LogDebug("Combined tagging prompt retrieved for source type: {SourceType}", sourceType);
             return combinedPrompt;
@@ -124,6 +131,27 @@ namespace Tender_AI_Tagging_Lambda.Services
                 _logger.LogError(ex, "Failed to parse Tag Map JSON from Parameter Store: {ParameterName}. Value was: {Value}", TagMapParamName, tagMapJson);
                 throw; // Re-throw as this is a critical configuration error
             }
+        }
+
+        /// <inheritdoc/>
+        public async Task<List<string>> GetMasterCategoryTagsAsync()
+        {
+            if (_configCache.TryGetValue(MasterTagListCacheKey, out var cachedList) && cachedList is List<string> tagList)
+            {
+                _logger.LogDebug("Master category tag list found in cache.");
+                return tagList;
+            }
+
+            _logger.LogInformation("Master category tag list not in cache. Fetching from Parameter Store: {ParameterName}", MasterTagListParamName);
+            string listString = await FetchParameterValueAsync(MasterTagListParamName);
+
+            // Parse comma-separated string into a List<string>
+            var parsedList = listString.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                                       .ToList();
+
+            _configCache.TryAdd(MasterTagListCacheKey, parsedList);
+            _logger.LogInformation("Successfully fetched and cached master category tag list. Count: {Count}", parsedList.Count);
+            return parsedList;
         }
 
         /// <summary>

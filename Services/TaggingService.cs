@@ -28,7 +28,8 @@ namespace Tender_AI_Tagging_Lambda.Services
         // Bedrock configuration
         private const string ModelId = "anthropic.claude-3-sonnet-20240229-v1:0";
         private const int MaxRetryAttempts = 4; // Adjusted retry attempts for tagging
-        private const int BaseDelayMs = 500;   // Adjusted base delay
+        private const int BaseDelayMs = 700;   // Adjusted base delay
+        private const int MaxTotalTags = 10; // The hard limit for total tags
 
         // Concurrency control for Bedrock
         private static readonly SemaphoreSlim _rateLimitSemaphore = new(1, 1); // Max 1 concurrent request per Lambda
@@ -41,61 +42,93 @@ namespace Tender_AI_Tagging_Lambda.Services
         }
 
         /// <inheritdoc/>
+        /// <summary>
+        /// This method is rewritten to follow the new 10-tag limit and hybrid generation logic.
+        /// </summary>
         public async Task<List<string>> GenerateAndCleanTagsAsync(TenderMessageBase tenderMessage)
         {
             // Step 1: Clear Existing Tags
             tenderMessage.Tags.Clear(); // Start fresh
-            _logger.LogDebug("Cleared existing tags for TenderNumber: {TenderNumber}", tenderMessage.TenderNumber);
+            _logger.LogDebug("Cleared existing metadata tags for TenderNumber: {TenderNumber}", tenderMessage.TenderNumber);
 
-            // Step 2: Get Configuration
+            // Step 2: Get All Configuration
             var blocklist = await _configService.GetTagBlocklistAsync();
             var tagMap = await _configService.GetTagMapAsync();
+
+            // GetCombinedTaggingPromptAsync() now also fetches the master tag list and injects it.
             var combinedPrompt = await _configService.GetCombinedTaggingPromptAsync(tenderMessage.GetSourceType());
 
-            // Step 3: Extract Fallback Tags First (Resilience step)
+            // Step 3: Generate and Clean Fallback Tags First
             var fallbackTags = ExtractFallbackTags(tenderMessage);
-            _logger.LogDebug("Extracted {Count} fallback tags for TenderNumber: {TenderNumber}", fallbackTags.Count, tenderMessage.TenderNumber);
+            var cleanedFallbackTags = ApplyQualityGatekeeper(fallbackTags, blocklist, tagMap);
+            var finalTagSet = new HashSet<string>(cleanedFallbackTags, StringComparer.OrdinalIgnoreCase);
 
-            // Step 4: Generate AI Tags via Bedrock
-            List<string> bedrockTags = new List<string>();
-            try
+            _logger.LogDebug("Generated {Count} clean fallback tags for {TenderNumber}.", finalTagSet.Count, tenderMessage.TenderNumber);
+
+            // Step 4: Check Quota and Call Bedrock if Needed
+            int tagsNeeded = MaxTotalTags - finalTagSet.Count;
+
+            if (tagsNeeded > 0)
             {
-                string inputText = PrepareInputText(tenderMessage);
-                if (!string.IsNullOrWhiteSpace(inputText))
-                {
-                    // WRAP THE BEDROCK CALL IN THE SEMAPHORE
-                    await _rateLimitSemaphore.WaitAsync(); // Wait for our turn
+                _logger.LogInformation("Have {CurrentCount} fallback tags, need {TagsNeeded} more from AI.", finalTagSet.Count, tagsNeeded);
 
-                    try
+                List<string> rawAiTags = new List<string>();
+
+                try
+                {
+                    string inputText = PrepareInputText(tenderMessage);
+
+                    if (!string.IsNullOrWhiteSpace(inputText))
                     {
-                        string rawTagString = await ExecuteBedrockRequestWithRetryAsync(combinedPrompt, inputText, tenderMessage.TenderNumber ?? "Unknown");
-                        bedrockTags = ParseBedrockTagResponse(rawTagString);
-                        _logger.LogDebug("Bedrock generated {Count} raw tags for TenderNumber: {TenderNumber}", bedrockTags.Count, tenderMessage.TenderNumber);
+                        // Wait for our turn to call Bedrock
+                        await _rateLimitSemaphore.WaitAsync();
+
+                        try
+                        {
+                            // Pass the number of tags we need to the Bedrock call
+                            string rawTagString = await ExecuteBedrockRequestWithRetryAsync(combinedPrompt, inputText, tagsNeeded, tenderMessage.TenderNumber ?? "Unknown");
+                            rawAiTags = ParseBedrockTagResponse(rawTagString);
+                            _logger.LogDebug("Bedrock generated {Count} raw tags for {TenderNumber}", rawAiTags.Count, tenderMessage.TenderNumber);
+                        }
+                        finally
+                        {
+                            _rateLimitSemaphore.Release(); // Always release the semaphore
+                        }
+
+                        // Step 5: Clean AI Tags and Add to Final Set
+                        var cleanedAiTags = ApplyQualityGatekeeper(rawAiTags, blocklist, tagMap);
+
+                        foreach (var aiTag in cleanedAiTags)
+                        {
+                            if (finalTagSet.Count >= MaxTotalTags)
+                            {
+                                break; // Stop adding if we've hit the 10-tag limit
+                            }
+                            finalTagSet.Add(aiTag); // HashSet handles all uniqueness
+                        }
                     }
-                    finally
+                    else
                     {
-                        _rateLimitSemaphore.Release(); // Always release the semaphore
+                        _logger.LogWarning("No suitable text found for Bedrock tagging for TenderNumber: {TenderNumber}", tenderMessage.TenderNumber);
                     }
                 }
-                else
+                catch (Exception ex)
                 {
-                    _logger.LogWarning("No suitable text found for Bedrock tagging for TenderNumber: {TenderNumber}", tenderMessage.TenderNumber);
+                    _logger.LogError(ex, "Bedrock tag generation failed for TenderNumber: {TenderNumber}. Proceeding with fallback tags only.", tenderMessage.TenderNumber);
+                    // Continue with just the fallback tags
                 }
             }
-            catch (Exception ex)
+            else
             {
-                _logger.LogError(ex, "Bedrock tag generation failed for TenderNumber: {TenderNumber}. Proceeding with fallback tags only.", tenderMessage.TenderNumber);
-                // Continue execution with just fallback tags
+                _logger.LogInformation("Fallback tag count ({Count}) met or exceeded limit. Skipping Bedrock.", finalTagSet.Count);
             }
 
-            // Step 5: Combine and Clean Tags
-            var combinedRawTags = fallbackTags.Concat(bedrockTags);
-            var finalTags = ApplyQualityGatekeeper(combinedRawTags, blocklist, tagMap);
+            // Step 6: Finalize, Sort, and Return
+            var finalList = finalTagSet.Take(MaxTotalTags).ToList(); // Enforce hard limit just in case
+            finalList.Sort();
 
-            // Step 6: Sort and Return
-            finalTags.Sort();
-            _logger.LogInformation("Generated {Count} final tags for TenderNumber: {TenderNumber}", finalTags.Count, tenderMessage.TenderNumber);
-            return finalTags;
+            _logger.LogInformation("Generated {Count} final tags for TenderNumber: {TenderNumber}", finalList.Count, tenderMessage.TenderNumber);
+            return finalList;
         }
 
         /// <summary>
@@ -128,21 +161,47 @@ namespace Tender_AI_Tagging_Lambda.Services
 
         /// <summary>
         /// Executes the Bedrock request with retry logic.
+        /// Method signature updated to accept 'tagsNeeded'
         /// </summary>
-        private async Task<string> ExecuteBedrockRequestWithRetryAsync(string combinedPrompt, string inputText, string tenderNumber)
+        private async Task<string> ExecuteBedrockRequestWithRetryAsync(string combinedPrompt, string inputText, int tagsNeeded, string tenderNumber)
         {
             var attempt = 0;
             while (attempt < MaxRetryAttempts)
             {
                 attempt++;
+
                 try
                 {
                     _logger.LogDebug("Bedrock tagging request attempt {Attempt}/{MaxAttempts} - TenderNumber: {TenderNumber}", attempt, MaxRetryAttempts, tenderNumber);
 
+                    // Calculate the number of additional tags to ask for.
+                    // The prompt asks for 1 Master Tag + (N-1) additional tags.
+                    int additionalTagsToGenerate = Math.Max(0, tagsNeeded - 1);
+
+                    // All static instructions are now in the `combinedPrompt` from Parameter Store.
+                    // We only append the dynamic task instructions and the tender text itself.
+                    string finalTaskInstruction = $"""
+
+                    ---
+                    DYNAMIC TASK:
+                    1.  You MUST select 1 tag from the "MASTER TAG LIST" (provided in the prompt above).
+                    2.  You MUST generate {additionalTagsToGenerate} additional, specific keywords from the "Tender Text" below.
+                    3.  You MUST return a total of {tagsNeeded} tags.
+                    4.  Your response MUST be ONLY a simple, comma-separated list of these {tagsNeeded} tags (the 1 master tag + the {additionalTagsToGenerate} generated keywords).
+                    ---
+
+                    Tender Text:
+                    {inputText}
+                    """;
+
+                    // The combinedPrompt already contains System + Master List + Source-Specific instructions.
+                    // We just append the final task and the data.
+                    string fullPrompt = combinedPrompt + finalTaskInstruction;
+
                     var payload = new
                     {
                         anthropic_version = "bedrock-2023-05-31",
-                        max_tokens = 300, // Tagging requires fewer tokens than summarization
+                        max_tokens = 450, // Tagging requires fewer tokens than summarization
                         temperature = 0.2, // Lower temperature for more deterministic tags
                         messages = new[]
                         {
@@ -154,8 +213,7 @@ namespace Tender_AI_Tagging_Lambda.Services
                                     new
                                     {
                                         type = "text",
-                                        // Instruct clearly, provide context, ask for comma-separated output
-                                        text = $"{combinedPrompt}\n\nAnalyze the following tender text and extract relevant keywords and tags. Focus on the core subject matter, required services/goods, industry, and location. Return the tags as a simple comma-separated list.\n\nTender Text:\n{inputText}"
+                                        text = fullPrompt // Full prompt with instructions and data
                                     }
                                 }
                             }
@@ -218,17 +276,37 @@ namespace Tender_AI_Tagging_Lambda.Services
         {
             var tags = new HashSet<string>(StringComparer.OrdinalIgnoreCase); // Use HashSet for initial deduplication
 
-            AddIfNotEmpty(tags, tender.GetSourceType());
-            AddIfNotEmpty(tags, tender.Province);
+            AddIfNotEmpty(tags, tender.GetSourceType()); // Fallback tag 1: Source Type
+            AddIfNotEmpty(tags, tender.Province); // Fallback tag 2: Province 
 
             // Add source-specific fields
             switch (tender)
             {
-                case ETenderMessage e: AddIfNotEmpty(tags, e.Status); break;
-                case TransnetTenderMessage t: AddIfNotEmpty(tags, t.Institution); AddIfNotEmpty(tags, t.Category); AddIfNotEmpty(tags, t.Location); break;
-                case SanralTenderMessage sn: AddIfNotEmpty(tags, sn.Category); AddIfNotEmpty(tags, sn.Region); break;
-            }
+                // eTender Fallback Tags
+                case ETenderMessage e:
+                    AddIfNotEmpty(tags, e.Audience); // Audience is often the Department in eTenders
+                    break;
 
+                // Transnet Fallback Tags
+                case TransnetTenderMessage t:
+                    AddIfNotEmpty(tags, t.Institution);
+                    AddIfNotEmpty(tags, t.Category);
+                    AddIfNotEmpty(tags, t.Location);
+                    break;
+
+                // SANRAL Fallback Tags
+                case SanralTenderMessage sn:
+                    AddIfNotEmpty(tags, sn.Category);
+                    AddIfNotEmpty(tags, sn.Region);
+                    break;
+
+                // SARS Fallback Tags
+                case SarsTenderMessage sars:
+                    // BriefingSession is a good tag
+                    if (!string.IsNullOrWhiteSpace(sars.BriefingSession))
+                        tags.Add("Briefing Session");
+                    break;
+            }
             return tags.ToList();
         }
 
@@ -244,18 +322,20 @@ namespace Tender_AI_Tagging_Lambda.Services
         }
 
         /// <summary>
+        /// Now returns a clean List<string> from the provided raw tags
         /// Applies the quality gatekeeper rules: blocklist, mapping, casing, de-pluralization, uniqueness.
         /// </summary>
         private List<string> ApplyQualityGatekeeper(IEnumerable<string> rawTags, HashSet<string> blocklist, Dictionary<string, string> tagMap)
         {
-            var finalTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var cleanTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
             var textInfo = CultureInfo.InvariantCulture.TextInfo;
 
             foreach (var rawTag in rawTags)
             {
                 if (string.IsNullOrWhiteSpace(rawTag)) continue;
 
-                string currentTag = rawTag.Trim();
+                string currentTag = rawTag.Trim('"', ' ', '.', '\n', '\r'); // Extra cleaning
                 string lowerTag = currentTag.ToLowerInvariant();
 
                 // 1. Check length and blocklist
@@ -277,30 +357,20 @@ namespace Tender_AI_Tagging_Lambda.Services
                     currentTag = textInfo.ToTitleCase(currentTag);
                 }
 
-                // 4. Simple De-pluralization for Uniqueness Check (Add the original form if unique)
-                // We check the singular form for existence, but add the potentially plural form.
-                string singularCheck = currentTag.EndsWith('s') ? currentTag.Substring(0, currentTag.Length - 1) : currentTag;
+                // 4. Simple De-pluralization for Uniqueness Check
+                string singularCheck = currentTag.EndsWith("s") ? currentTag[..^1] : currentTag;
 
-                // Check uniqueness based on singular form (case-insensitive)
-                bool alreadyExists = false;
-                foreach (var existingTag in finalTags)
+                // Check if a singular or plural version is already in the set
+                if (cleanTags.Contains(singularCheck) || cleanTags.Contains(singularCheck + "s"))
                 {
-                    string existingSingular = existingTag.EndsWith('s') ? existingTag.Substring(0, existingTag.Length - 1) : existingTag;
-                    if (string.Equals(singularCheck, existingSingular, StringComparison.OrdinalIgnoreCase))
-                    {
-                        alreadyExists = true;
-                        _logger.LogTrace("Tag considered duplicate (singular form exists): '{CurrentTag}' (singular: '{SingularCheck}')", currentTag, singularCheck);
-                        break;
-                    }
+                    _logger.LogTrace("Tag considered duplicate (singular/plural form exists): '{CurrentTag}'", currentTag);
+                    continue;
                 }
 
-                if (!alreadyExists)
-                {
-                    finalTags.Add(currentTag); // Add the processed (mapped or title-cased) tag
-                }
+                cleanTags.Add(currentTag); // Add the processed (mapped or title-cased) tag
             }
 
-            return finalTags.ToList(); // Convert back to list for sorting later
+            return cleanTags.ToList();
         }
 
         // Helper methods adapted from the BedrockSummaryService 
