@@ -16,17 +16,6 @@ namespace Tender_AI_Tagging_Lambda.Models
     public class ETenderMessage : TenderMessageBase
     {
         /// <summary>
-        /// Gets or sets the unique numerical identifier for the tender in the eTenders system.
-        /// This ID is typically assigned by the eTenders platform when a tender is first
-        /// created and serves as the primary key for the tender record.
-        /// </summary>
-        /// <value>
-        /// An integer representing the eTenders system ID. Defaults to 0 if not specified.
-        /// </value>
-        [JsonPropertyName("id")]
-        public int Id { get; set; }
-
-        /// <summary>
         /// Gets or sets the current status of the tender in the eTenders system.
         /// This indicates the current stage of the tender in its lifecycle, from
         /// initial publication through to closure and award.
@@ -44,7 +33,7 @@ namespace Tender_AI_Tagging_Lambda.Models
         /// <value>
         /// A DateTime representing when the tender was published. Defaults to DateTime's default value if not specified.
         /// </value>
-        [JsonPropertyName("datePublished")]
+        [JsonPropertyName("publishedDate")]
         public DateTime DatePublished { get; set; }
 
         /// <summary>
@@ -54,19 +43,8 @@ namespace Tender_AI_Tagging_Lambda.Models
         /// <value>
         /// A DateTime representing the tender closing deadline. Defaults to DateTime's default value if not specified.
         /// </value>
-        [JsonPropertyName("dateClosing")]
+        [JsonPropertyName("closingDate")]
         public DateTime DateClosing { get; set; }
-
-        /// <summary>
-        /// Gets or sets the direct URL to view the full tender details on the eTenders platform.
-        /// This provides a direct link that users can follow to access the complete
-        /// tender information, submit bids, or download additional documents.
-        /// </summary>
-        /// <value>
-        /// A string containing the tender URL. Defaults to an empty string if not specified.
-        /// </value>
-        [JsonPropertyName("url")]
-        public string Url { get; set; } = string.Empty;
 
         /// <summary>
         /// Gets or sets the collection of supporting documents specifically for this eTender.

@@ -146,7 +146,7 @@ namespace Tender_AI_Tagging_Lambda.Services
 
                 // Log successful deserialization with safe property access
                 _logger.LogDebug("eTender message deserialized successfully - ID: {TenderId}, Status: {Status}, Title: {Title}",
-                    message.Id, message.Status ?? "Unknown", message.Title ?? "No Title");
+                    message.TenderNumber, message.Status ?? "Unknown", message.Title ?? "No Title");
 
                 return message;
             }

@@ -27,8 +27,8 @@ namespace Tender_AI_Tagging_Lambda.Services
 
         // Bedrock configuration
         private const string ModelId = "anthropic.claude-3-sonnet-20240229-v1:0";
-        private const int MaxRetryAttempts = 4; // Adjusted retry attempts for tagging
-        private const int BaseDelayMs = 700;   // Adjusted base delay
+        private const int MaxRetryAttempts = 6; // Increased to 6 total attempts
+        private const int BaseDelayMs = 1500;   // 1.5 second base delay
         private const int MaxTotalTags = 10; // The hard limit for total tags
 
         // Concurrency control for Bedrock
@@ -376,10 +376,13 @@ namespace Tender_AI_Tagging_Lambda.Services
         // Helper methods adapted from the BedrockSummaryService 
         private int CalculateBackoffDelay(int attempt)
         {
+            // Exponential backoff: ~1.5s, 3s, 6s, 12s, 24s (for 6 attempts)
             var exponentialDelay = BaseDelayMs * Math.Pow(2, attempt - 1);
             var random = new Random();
             var jitter = random.NextDouble() * 0.5 + 0.75; // 0.75 to 1.25
-            return Math.Min((int)(exponentialDelay * jitter), 15000); // Shorter max delay for tagging
+
+            // Cap at 30 seconds maximum to prevent excessive delays
+            return Math.Min((int)(exponentialDelay * jitter), 30000);
         }
 
         private string ParseClaudeResponse(string responseJson) // Reused from Summarization
