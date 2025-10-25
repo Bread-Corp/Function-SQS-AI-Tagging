@@ -49,7 +49,7 @@ namespace Tender_AI_Tagging_Lambda.Services
             }
 
             string systemPromptKey = $"prompt_{TaggingSystemPromptSuffix}";
-            string sourcePromptKey = $"prompt_{TaggingSourcePromptPrefix}{sourceType}"; // e.g., prompt_TaggingEskom
+            string sourcePromptKey = $"prompt_{TaggingSourcePromptPrefix}{sourceType.ToLower()}"; // e.g., prompt_Taggingeskom
 
             // Fetch system prompt (cache handled internally)
             string systemPrompt = await EnsurePromptCachedAsync(TaggingSystemPromptSuffix, systemPromptKey);
