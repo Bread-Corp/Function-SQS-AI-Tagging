@@ -55,7 +55,7 @@ namespace Tender_AI_Tagging_Lambda.Services
             string systemPrompt = await EnsurePromptCachedAsync(TaggingSystemPromptSuffix, systemPromptKey);
 
             // Fetch source-specific prompt (cache handled internally)
-            string sourcePrompt = await EnsurePromptCachedAsync($"{TaggingSourcePromptPrefix}{sourceType}", sourcePromptKey);
+            string sourcePrompt = await EnsurePromptCachedAsync($"{TaggingSourcePromptPrefix}{sourceType.ToLower()}", sourcePromptKey);
 
             // Fetch master tag list (cache handled internally)
             var masterTags = await GetMasterCategoryTagsAsync();
