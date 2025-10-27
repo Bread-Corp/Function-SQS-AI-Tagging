@@ -1,14 +1,14 @@
-﻿# 🏷️ AI Tagging Lambda — Tender Categorization Service
+# 🏷️ AI Tagging Lambda — Tender Categorisation Service
 
 [![AWS Lambda](https://img.shields.io/badge/AWS-Lambda-orange.svg)](https://aws.amazon.com/lambda/)
 [![.NET 8](https://img.shields.io/badge/.NET-8.0-blue.svg)](https://dotnet.microsoft.com/)
-[![SQS](https://img.shields.io/badge/AWS-SQS-yellow.svg)](https://aws.amazon.com/sqs/)
-[![Bedrock](https://img.shields.io/badge/AWS-Bedrock-blueviolet.svg)](https://aws.amazon.com/bedrock/)
+[![Amazon SQS](https://img.shields.io/badge/AWS-SQS-yellow.svg)](https://aws.amazon.com/sqs/)
+[![Amazon Bedrock](https://img.shields.io/badge/AWS-Bedrock-blueviolet.svg)](https://aws.amazon.com/bedrock/)
 [![Parameter Store](https://img.shields.io/badge/AWS-Parameter%20Store-informational.svg)](https://aws.amazon.com/systems-manager/features/)
 
 This is the third microservice in the tender processing pipeline. It consumes summarized tender messages from the TagQueue, generates a high-quality set of content-relevant tags, and publishes the fully enriched tender object to the final WriteQueue for database ingestion.
 
-This function replaces a previous Python/Comprehend implementation, upgrading the tagging engine to .NET 8 and Amazon Bedrock (Anthropic Claude 3 Sonnet). All business logic—including AI prompts, blocklists, and tag mapping rules—is dynamically loaded from AWS Parameter Store to allow for easy updates without redeploying code.
+This function replaces a previous Python/Comprehend implementation, upgrading the tagging engine to .NET 8 and Amazon Bedrock (Anthropic Claude 3 Sonnet). All business logic—including AI prompts, a master category list, blocklists, and tag mapping rules—is dynamically loaded from AWS Parameter Store to allow for easy updates without redeploying code.
 
 ## 📚 Table of Contents
 
@@ -28,9 +28,16 @@ This function replaces a previous Python/Comprehend implementation, upgrading th
 
 - **🧠 Smart Tagging**: Utilizes Anthropic Claude 3 Sonnet via Bedrock for nuanced, context-aware tag and keyword extraction.
 
-- **🎯 Tailored AI Prompts**: Dynamically fetches source-specific prompts (for Eskom, SANRAL, etc.) from AWS Parameter Store to guide the AI, ensuring tag relevance.
+- **🎯 Tailored AI Prompts**: Dynamically fetches source-specific prompts, a master tag list for categorization, and business rules from AWS Parameter Store to guide the AI, ensuring tag relevance.
 
-- **🛡️ Resilient by Design**: Generates fallback tags (from Source, Region, Category) before the AI call, ensuring every tender has baseline tags even if Bedrock fails.
+- **🛡️ Hybrid Tag Generation**: First generates fallback tags (from Source, Region, Category), ensuring every tender has baseline tags even if the AI call fails.
+
+- **🎯 Quota-Controlled (Max 10 Tags)**: Enforces a hard limit of 10 tags. It first generates and cleans all fallback tags, then calculates the remaining "quota" to be filled by the AI, ensuring a balanced and concise tag set.
+
+- **🏷️ Master Tag Categorization**: Forces the AI to select at least one high-level category from a centrally-managed "Master Tag List", ensuring every tender is broadly categorized.
+
+  > **Master Tag Categories:**  
+  > Construction & Civil Engineering • IT & Software • Consulting & Professional Services • Maintenance & Repairs • Supply & Delivery • Financial & Auditing Services • Logistics & Transport • Health, Safety & Environmental • General Services • Training & Development
 
 - **🧹 Quality Gatekeeper**:
   - **Clears Metadata Tags**: Automatically removes all incoming processing tags (e.g., "SummaryGenerated") to start with a clean slate.
@@ -52,12 +59,14 @@ TagQueue (TagQueue.fifo) ← Summarized tenders with AI summaries
     ↓
 AI Tagging Lambda (Sqs_Tagging_Lambda)
     ├─ Message Factory (deserialize to specific tender types)
-    ├─ Config Service ← AWS Parameter Store (prompts, blocklist, tag-map)
+    ├─ Config Service ← AWS Parameter Store (prompts, blocklist, map, master-list)
     ├─ Tagging Service
-    │   ├─ Clear existing metadata tags
-    │   ├─ Generate fallback tags (Source, Region, Category)
-    │   ├─ Bedrock Service → Amazon Bedrock (Claude 3 Sonnet)
-    │   └─ Quality Gatekeeper (filter, map, normalize, dedupe)
+    │   ├─ 1. Clear existing metadata tags
+    │   ├─ 2. Generate & clean fallback tags (e.g., "SANRAL")
+    │   ├─ 3. Calculate remaining quota (Max 10 - fallback_count)
+    │   ├─ 4. Call Bedrock (if quota > 0)
+    │   │   └─ Prompt: "Select 1 from Master List + (quota-1) keywords"
+    │   └─ 5. Final Quality Gatekeeper (combine, blocklist, map, sort, cap at 10)
     └─ SQS Service (I/O)
            ├─ WriteQueue (WriteQueue.fifo)        ← success + enriched tags
            └─ TagFailedQueue (TagFailedQueue.fifo) ← errors/DLQ
@@ -65,36 +74,37 @@ AI Tagging Lambda (Sqs_Tagging_Lambda)
 Database Writer Lambda
     ↓
 RDS Database
-
 ```
 
 ## 🧠 How It Works: The Tagging Pipeline
 
 This function executes a specific sequence for every tender message it processes.
 
-1. **Ingest & Clear**: The `FunctionHandler` receives a batch of messages. The `MessageFactory` deserializes each message into its specific type (e.g., `SanralTenderMessage`). The `TaggingService` immediately calls `tenderMessage.Tags.Clear()` to remove all old metadata tags (e.g., "Processed", "SummaryGeneratedBySANRALHandler").
+1. **🗑️ Ingest & Clear**: The `FunctionHandler` receives a batch of messages. The `MessageFactory` deserializes each message into its specific type (e.g., `SanralTenderMessage`). The `TaggingService` immediately calls `tenderMessage.Tags.Clear()` to remove all old metadata tags (e.g., "Processed", "SummaryGeneratedBySANRALHandler").
 
-2. **Fetch Config**: The `ConfigService` (as a singleton) fetches and caches all configuration from AWS Parameter Store:
+2. **📋 Fetch Config**: The `ConfigService` (as a singleton) fetches and caches all configuration from AWS Parameter Store:
    - The tag-blocklist (as a `HashSet<string>`).
    - The tag-map (as a `Dictionary<string, string>`).
-   - The two required tagging prompts: `/TenderSummary/Prompts/TaggingSystem` and the source-specific prompt (e.g., `/TenderSummary/Prompts/TaggingSANRAL`).
+   - The Master Tag List (as a `List<string>`).
+   - The `ConfigService` dynamically combines the base system prompt, the source-specific prompt (e.g., `TaggingSANRAL`), and the Master Tag List into a single, comprehensive prompt for the AI.
 
-3. **Generate Fallback Tags**: The `TaggingService` first extracts a list of basic tags from the tender's structured data (e.g., Source: "SANRAL", Region: "Western Region"). This guarantees a baseline of tags if the AI call fails.
+3. **🏗️ Generate & Clean Fallback Tags**: The `TaggingService` first extracts a list of basic tags from the tender's structured data (e.g., Source: "SANRAL", Region: "Western Region"). These tags are immediately passed through the Quality Gatekeeper (blocklist, map) to create a clean, de-duplicated set.
 
-4. **Generate AI Tags**:
-   - The service prepares an input text for the AI (combining the Title, Description, and AI Summary).
-   - It sends the combined prompts and the input text to Claude 3 Sonnet via Bedrock.
-   - This call is wrapped in robust retry logic to handle API throttling.
+4. **🎯 Calculate Quota & Call Bedrock**:
+   - The service counts the clean fallback tags (e.g., 3 tags).
+   - It calculates the remaining quota: `tagsNeeded = MaxTotalTags (10) - 3 = 7`.
+   - If `tagsNeeded > 0`, the `TaggingService` prepares the input text (Title, Description, Summary).
+   - It calls Bedrock with a dynamic prompt, instructing it to:
+     - Select **1 tag** from the "MASTER TAG LIST" (which was injected into the prompt).
+     - Generate `tagsNeeded - 1` (e.g., 6) additional, specific keywords from the tender text.
+   - This call is wrapped in robust retry logic (6 attempts with 1.5s base backoff) to handle API throttling.
 
-5. **Apply Quality Gatekeeper**:
-   - The service combines the fallback tags and the new AI tags.
-   - It iterates this combined list and applies all rules:
-     - **Block**: Ignores tags in the blocklist (e.g., "various", "n/a").
-     - **Map**: Standardizes terms (e.g., "western region" → "Western Cape").
-     - **Normalize**: Title-cases unmapped tags.
-     - **Dedupe**: Uses a HashSet to ensure a final list of unique tags.
+5. **🔄 Combine & Finalize**:
+   - The service combines the clean fallback tags and the new AI-generated tags.
+   - It runs this final combined list through the Quality Gatekeeper again to apply rules to the AI tags and ensure total uniqueness.
+   - The list is sorted, and finally capped at the `MaxTotalTags (10)` limit.
 
-6. **Route & Cleanup**:
+6. **📤 Route & Cleanup**:
    - The final, sorted `List<string>` of tags replaces the (now empty) Tags property on the `tenderMessage` object.
    - The complete, tagged `tenderMessage` is serialized and sent to `WriteQueue.fifo`.
    - Messages that failed at any step are sent to `TagFailedQueue.fifo`.
@@ -104,26 +114,26 @@ This function executes a specific sequence for every tender message it processes
 
 ```
 Sqs_Tagging_Lambda/
-├── Function.cs                 # Lambda entry point, DI setup, polling loop
-├── Models/                     # (Copied from Sqs_AI_Lambda)
-│   ├── TenderMessageBase.cs    # Abstract base
-│   ├── ETenderMessage.cs       # Specific models...
+├── Function.cs                  # Lambda entry point, DI setup, polling loop
+├── Models/                      # (Copied from Sqs_AI_Lambda)
+│   ├── TenderMessageBase.cs     # Abstract base
+│   ├── ETenderMessage.cs        # Specific models...
 │   ├── EskomTenderMessage.cs
 │   ├── TransnetTenderMessage.cs
 │   ├── SarsTenderMessage.cs
 │   ├── SanralTenderMessage.cs
 │   ├── SupportingDocument.cs
-│   └── QueueMessage.cs         # Internal SQS wrapper
+│   └── QueueMessage.cs          # Internal SQS wrapper
 ├── Services/
-│   ├── ConfigService.cs        # Fetches/caches ALL config from Parameter Store
-│   ├── TaggingService.cs       # Core logic: Clear, Fallback, AI, Clean
-│   ├── MessageFactory.cs       # (Reused) Deserializes JSON to models
-│   └── SqsService.cs           # (Reused) SQS send/delete operations
+│   ├── ConfigService.cs         # Fetches/caches ALL config from Parameter Store
+│   ├── TaggingService.cs        # Core logic: Clear, Fallback, AI, Clean
+│   ├── MessageFactory.cs        # (Reused) Deserializes JSON to models
+│   └── SqsService.cs            # (Reused) SQS send/delete operations
 ├── Interfaces/
 │   ├── IConfigService.cs
 │   ├── ITaggingService.cs
-│   ├── IMessageFactory.cs      # (Reused)
-│   └── ISqsService.cs          # (Reused)
+│   ├── IMessageFactory.cs       # (Reused)
+│   └── ISqsService.cs           # (Reused)
 ├── aws-lambda-tools-defaults.json # Deployment config
 └── README.md
 ```
@@ -132,15 +142,16 @@ Sqs_Tagging_Lambda/
 
 This function will not run without the following resources being correctly configured.
 
-### 1. AWS Parameter Store (9 Parameters Required)
+### 1. AWS Parameter Store (Parameters Required)
 
 All parameters are String type.
 
-**Tagging Rules:**
+**Tagging Rules (Shared):**
 - `/tenders/ai-processor/tag-blocklist`
 - `/tenders/ai-processor/tag-map`
+- `/tenders/ai-processor/master-tag-list`
 
-**Tagging Prompts:**
+**Tagging Prompts (Source-Specific):**
 - `/TenderSummary/Prompts/TaggingSystem`
 - `/TenderSummary/Prompts/TaggingEskom`
 - `/TenderSummary/Prompts/TaggingETenders`
@@ -233,7 +244,7 @@ Follow these steps to set up the project for local development.
    dotnet user-secrets set "FAILED_QUEUE_URL" "your-failed-queue-url"
    ```
 
-   > **Note:** Ensure all 9 Parameter Store parameters are created in your AWS account before testing locally.
+   > **Note:** Ensure all Parameter Store parameters are created in your AWS account before testing locally.
 
 ## 📦 Deployment Guide
 
@@ -271,9 +282,12 @@ dotnet lambda package -c Release -o ./build/deploy-package.zip
 <details>
 <summary><strong>Missing Parameters (KeyNotFoundException)</strong></summary>
 
-**Issue**: If the function fails with a `KeyNotFoundException`, it means one of the 9 required parameters is missing from AWS Parameter Store.
+**Issue**: If the function fails with a `KeyNotFoundException`, it means one of the required parameters is missing from AWS Parameter Store.
 
-**Fix**: Check the logs to see which parameter name it failed to find. Ensure all parameters listed in the Configuration section are created in Parameter Store.
+**Fix**: Check the logs to see which parameter name it failed to find. Ensure all parameters listed in the Configuration section are created in Parameter Store, especially:
+- `/tenders/ai-processor/master-tag-list`
+- `/tenders/ai-processor/tag-blocklist`
+- `/tenders/ai-processor/tag-map`
 
 </details>
 
