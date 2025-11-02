@@ -15,10 +15,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@a5ac7e51b4109f5124f2601c3e7b5f8e0539113f
 
       - name: Set up .NET 8
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@B59B622E1A11F5EA95A591B1A736B461168B52B8
         with:
           dotnet-version: '8.0'
 
@@ -31,7 +31,7 @@ jobs:
           dotnet lambda package -c Release -o ./lambda.zip Tender_AI_Tagging_Lambda.csproj
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@b0c66bce8b23e8d0800b65a3978b31d0c5a6100f
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
