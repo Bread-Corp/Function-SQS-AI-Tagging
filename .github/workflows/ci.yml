@@ -1,0 +1,88 @@
+name: CI for .NET Lambda (Main)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-lint-scan:
+    name: Build, Lint, and Scan
+    runs-on: windows-latest
+
+    steps:
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: 'zulu'
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Required for Sonar
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0'
+
+      - name: Install .NET linter
+        run: dotnet tool install -g dotnet-format
+
+      - name: Cache SonarQube Cloud packages
+        uses: actions/cache@v4
+        with:
+          path: ~\sonar\cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
+
+      - name: Cache SonarQube Cloud scanner
+        id: cache-sonar-scanner
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\scanner
+          key: ${{ runner.os }}-sonar-scanner
+          restore-keys: ${{ runner.os }}-sonar-scanner
+
+      - name: Install SonarQube Cloud scanner
+        if: steps.cache-sonar-scanner.outputs.cache-hit != 'true'
+        shell: powershell
+        run: |
+          New-Item -Path ${{ runner.temp }}\scanner -ItemType Directory
+          dotnet tool update dotnet-sonarscanner --tool-path ${{ runner.temp }}\scanner
+
+      - name: SonarQube Begin Scan
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        shell: powershell
+        run: |
+          # Updated Sonar Project Key
+          ${{ runner.temp }}\scanner\dotnet-sonarscanner begin /k:"Bread-Corp_Function-SQS-AI-Tagging" /o:"bread-corp" /d:sonar.token="$env:SONAR_TOKEN"
+
+      - name: Restore dependencies
+        run: dotnet restore Tender_AI_Tagging_Lambda.sln
+
+      - name: Build project
+        run: dotnet build Tender_AI_Tagging_Lambda.sln --no-restore
+      
+      - name: Lint with .NET Format
+        continue-on-error: true
+        shell: powershell
+        run: |
+          # Updated solution file name and targeting only .cs files
+          dotnet format Tender_AI_Tagging_Lambda.sln --verify-no-changes --include "**/*.cs"
+        
+      # --- TESTING: Uncomment this step when you add a test project ---
+      # - name: Test with .NET Test
+      #   continue-on-error: true 
+      #   run: |
+      #     dotnet test Tender_AI_Tagging_Lambda.sln --no-build --verbosity normal
+
+      - name: SonarQube End Scan
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        shell: powershell
+        run: |
+          ${{ runner.temp }}\scanner\dotnet-sonarscanner end /d:sonar.token="$env:SONAR_TOKEN"
