@@ -246,27 +246,225 @@ Follow these steps to set up the project for local development.
 
    > **Note:** Ensure all Parameter Store parameters are created in your AWS account before testing locally.
 
-## 📦 Deployment Guide
+## 📦 Deployment
 
-Follow these steps to package and deploy the function to AWS Lambda.
+This Lambda function can be deployed using three different methods. Choose the one that best fits your workflow and requirements.
 
-### Step 1: Create the Deployment Package
+### Prerequisites
 
-Run the following command from the project's root directory. This will build the project in Release mode and create a `.zip` file ready for deployment.
+Before deploying, ensure you have:
+
+- .NET 8 SDK installed
+- AWS CLI configured with appropriate credentials
+- All required AWS resources (SQS queues, Parameter Store parameters, IAM roles) are set up
+- Required environment variables configured (see Configuration section)
+
+---
+
+### Method 1: AWS Toolkit Deployment
+
+Deploy directly from your IDE using the AWS Toolkit extension.
+
+#### For Visual Studio 2022:
+
+1. **Install AWS Toolkit:**
+   - Install the AWS Toolkit for Visual Studio from the Visual Studio Marketplace
+
+2. **Configure AWS Credentials:**
+   - Ensure your AWS credentials are configured in Visual Studio
+   - Go to View → AWS Explorer and configure your profile
+
+3. **Deploy the Function:**
+   - Right-click on the `Tender_AI_Tagging_Lambda.csproj` project
+   - Select "Publish to AWS Lambda..."
+   - Configure the deployment settings:
+     - **Function Name**: `TenderAITaggingLambda`
+     - **Runtime**: `.NET 8`
+     - **Memory**: `512 MB`
+     - **Timeout**: `900 seconds`
+     - **Handler**: `Tender_AI_Tagging_Lambda::Tender_AI_Tagging_Lambda.Function::FunctionHandler`
+
+4. **Set Environment Variables:**
+   ```
+   SOURCE_QUEUE_URL: https://sqs.us-east-1.amazonaws.com/211635102441/TagQueue.fifo
+   WRITE_QUEUE_URL: https://sqs.us-east-1.amazonaws.com/211635102441/WriteQueue.fifo
+   FAILED_QUEUE_URL: https://sqs.us-east-1.amazonaws.com/211635102441/TagFailedQueue.fifo
+   ```
+
+#### For VS Code:
+
+1. **Install AWS Toolkit:**
+   - Install the AWS Toolkit extension for VS Code
+
+2. **Open Command Palette:**
+   - Press `Ctrl+Shift+P` (Windows/Linux) or `Cmd+Shift+P` (Mac)
+   - Type "AWS: Deploy SAM Application"
+
+3. **Follow the deployment wizard** to configure and deploy your function
+
+---
+
+### Method 2: SAM Deployment
+
+Deploy using AWS SAM CLI with the provided template file.
+
+#### Step 1: Install SAM CLI
 
 ```bash
-dotnet lambda package -c Release -o ./build/deploy-package.zip
+# For Windows (using Chocolatey)
+choco install aws-sam-cli
+
+# For macOS (using Homebrew)
+brew install aws-sam-cli
+
+# For Linux (using pip)
+pip install aws-sam-cli
 ```
 
-### Step 2: Deploy to AWS Lambda
+#### Step 2: Install Lambda Tools
 
-1. Navigate to the AWS Lambda console and select the `TenderTagging` function.
-2. Under the "Code source" section, click the "Upload from" button.
-3. Select ".zip file".
-4. Upload the `deploy-package.zip` file located in the `build` directory.
-5. Click Save.
+```bash
+dotnet tool install -g Amazon.Lambda.Tools
+```
 
-> Ensure all AWS prerequisites (IAM roles, Parameter Store parameters, SQS queues) are in place before deploying.
+#### Step 3: Build and Deploy
+
+```bash
+# Build the project
+dotnet restore
+dotnet build -c Release
+
+# Package the Lambda function
+dotnet lambda package -c Release -o ./lambda-package.zip Tender_AI_Tagging_Lambda.csproj
+
+# Deploy using SAM
+sam deploy --template-file TenderAITaggingLambda.yaml \
+           --stack-name tender-ai-tagging-lambda \
+           --capabilities CAPABILITY_IAM \
+           --parameter-overrides \
+             SourceQueueUrl="https://sqs.us-east-1.amazonaws.com/211635102441/TagQueue.fifo" \
+             WriteQueueUrl="https://sqs.us-east-1.amazonaws.com/211635102441/WriteQueue.fifo" \
+             FailedQueueUrl="https://sqs.us-east-1.amazonaws.com/211635102441/TagFailedQueue.fifo"
+```
+
+#### Alternative: Guided Deployment
+
+For first-time deployment, use SAM's guided mode:
+
+```bash
+sam deploy --guided
+```
+
+This will prompt you for all configuration options and save them for future deployments.
+
+---
+
+### Method 3: Workflow Deployment (GitHub Actions)
+
+Deploy automatically using GitHub Actions when pushing to the release branch.
+
+#### Step 1: Set Up Repository Secrets
+
+In your GitHub repository, go to Settings → Secrets and variables → Actions, and add:
+
+```
+AWS_ACCESS_KEY_ID: your-aws-access-key-id
+AWS_SECRET_ACCESS_KEY: your-aws-secret-access-key
+AWS_REGION: us-east-1
+```
+
+#### Step 2: Deploy via Release Branch
+
+```bash
+# Create and switch to release branch
+git checkout -b release
+
+# Make your changes and commit
+git add .
+git commit -m "Deploy AI Tagging Lambda updates"
+
+# Push to trigger deployment
+git push origin release
+```
+
+#### Step 3: Monitor Deployment
+
+1. Go to your repository's **Actions** tab
+2. Monitor the "Deploy .NET Lambda to AWS" workflow
+3. Check the deployment logs for any issues
+
+#### Manual Trigger
+
+You can also trigger the deployment manually:
+
+1. Go to the **Actions** tab in your repository
+2. Select "Deploy .NET Lambda to AWS"
+3. Click "Run workflow"
+4. Select the branch and click "Run workflow"
+
+---
+
+### Post-Deployment Verification
+
+After deploying using any method, verify the deployment:
+
+#### 1. Check Lambda Function
+
+```bash
+# Verify function exists and configuration
+aws lambda get-function --function-name TenderAITaggingLambda
+
+# Check environment variables
+aws lambda get-function-configuration --function-name TenderAITaggingLambda
+```
+
+#### 2. Test Function (Optional)
+
+```bash
+# Create a test event and invoke the function
+aws lambda invoke \
+  --function-name TenderAITaggingLambda \
+  --payload '{}' \
+  response.json
+```
+
+#### 3. Monitor CloudWatch Logs
+
+```bash
+# View recent logs
+aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/TenderAITaggingLambda"
+```
+
+---
+
+### Environment Variables Setup
+
+Ensure these environment variables are configured in your Lambda function:
+
+| Variable | Value | Description |
+|----------|-------|-------------|
+| `SOURCE_QUEUE_URL` | `https://sqs.us-east-1.amazonaws.com/211635102441/TagQueue.fifo` | Source SQS queue for incoming messages |
+| `WRITE_QUEUE_URL` | `https://sqs.us-east-1.amazonaws.com/211635102441/WriteQueue.fifo` | Target queue for successfully processed messages |
+| `FAILED_QUEUE_URL` | `https://sqs.us-east-1.amazonaws.com/211635102441/TagFailedQueue.fifo` | Dead letter queue for failed messages |
+
+> **Security Note**: For production deployments, consider using AWS Secrets Manager or Parameter Store for sensitive configuration values.
+
+---
+
+### Troubleshooting Deployment Issues
+
+**Permission Errors:**
+- Ensure your AWS credentials have the necessary permissions for Lambda, SQS, Bedrock, and Parameter Store
+- Verify IAM roles are correctly configured as described in the IAM Permissions section
+
+**Package Size Issues:**
+- The deployment package should be under 50MB when uncompressed
+- Use `dotnet lambda package` to create optimized packages
+
+**Runtime Errors:**
+- Check CloudWatch logs for detailed error messages
+- Verify all Parameter Store parameters are correctly set up
+- Ensure SQS queues exist and are accessible
 
 ## 🧰 Troubleshooting & Team Gotchas
 
