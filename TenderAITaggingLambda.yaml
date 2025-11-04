@@ -1,0 +1,226 @@
+# This AWS SAM template has been generated from your function's configuration. If
+# your function has one or more triggers, note that the AWS resources associated
+# with these triggers aren't fully specified in this template and include
+# placeholder values. Open this template in AWS Infrastructure Composer or your
+# favorite IDE and modify it to specify a serverless application with other AWS
+# resources.
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: An AWS Serverless Application Model template describing your function.
+Resources:
+  TenderAITaggingLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Description: >-
+        AI Tagging Service: Consumes summarized tenders, clears old tags, and
+        generates new content tags using AWS Bedrock (Claude 3 Sonnet) and rules
+        from Parameter Store. Routes enriched data to the WriteQueue.
+      MemorySize: 512
+      Timeout: 900
+      Handler: >-
+        Tender_AI_Tagging_Lambda::Tender_AI_Tagging_Lambda.Function::FunctionHandler
+      Runtime: dotnet8
+      Architectures:
+        - x86_64
+      EphemeralStorage:
+        Size: 512
+      Environment:
+        Variables:
+          FAILED_QUEUE_URL: https://sqs.us-east-1.amazonaws.com/211635102441/TagFailedQueue.fifo
+          SOURCE_QUEUE_URL: https://sqs.us-east-1.amazonaws.com/211635102441/TagQueue.fifo
+          WRITE_QUEUE_URL: https://sqs.us-east-1.amazonaws.com/211635102441/WriteQueue.fifo
+      EventInvokeConfig:
+        MaximumEventAgeInSeconds: 21600
+        MaximumRetryAttempts: 2
+      PackageType: Zip
+      Policies:
+        - Statement:
+            - Sid: SQSReadOperations
+              Effect: Allow
+              Action:
+                - sqs:ReceiveMessage
+                - sqs:DeleteMessage
+                - sqs:GetQueueAttributes
+                - sqs:GetQueueUrl
+                - sqs:ListQueues
+                - sqs:ChangeMessageVisibility
+              Resource: '*'
+            - Sid: SQSWriteOperations
+              Effect: Allow
+              Action:
+                - sqs:SendMessage
+                - sqs:GetQueueUrl
+                - sqs:GetQueueAttributes
+              Resource: '*'
+            - Sid: VisualEditor0
+              Effect: Allow
+              Action:
+                - logs:*
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - ssm:Describe*
+                - ssm:Get*
+                - ssm:List*
+              Resource: '*'
+            - Sid: BedrockAll
+              Effect: Allow
+              Action:
+                - bedrock:*
+              Resource: '*'
+            - Sid: DescribeKey
+              Effect: Allow
+              Action:
+                - kms:DescribeKey
+              Resource: arn:*:kms:*:::*
+            - Sid: APIsWithAllResourceAccess
+              Effect: Allow
+              Action:
+                - iam:ListRoles
+                - ec2:DescribeVpcs
+                - ec2:DescribeSubnets
+                - ec2:DescribeSecurityGroups
+              Resource: '*'
+            - Sid: MarketplaceModelEndpointMutatingAPIs
+              Effect: Allow
+              Action:
+                - sagemaker:CreateEndpoint
+                - sagemaker:CreateEndpointConfig
+                - sagemaker:CreateModel
+                - sagemaker:DeleteEndpoint
+                - sagemaker:UpdateEndpoint
+              Resource:
+                - arn:aws:sagemaker:*:*:endpoint/*
+                - arn:aws:sagemaker:*:*:endpoint-config/*
+                - arn:aws:sagemaker:*:*:model/*
+              Condition:
+                StringEquals:
+                  aws:CalledViaLast: bedrock.amazonaws.com
+                  aws:ResourceTag/sagemaker-sdk:bedrock: compatible
+            - Sid: MarketplaceModelEndpointAddTagsOperations
+              Effect: Allow
+              Action:
+                - sagemaker:AddTags
+              Resource:
+                - arn:aws:sagemaker:*:*:endpoint/*
+                - arn:aws:sagemaker:*:*:endpoint-config/*
+                - arn:aws:sagemaker:*:*:model/*
+              Condition:
+                ForAllValues:StringEquals:
+                  aws:TagKeys:
+                    - sagemaker-sdk:bedrock
+                    - bedrock:marketplace-registration-status
+                    - sagemaker-studio:hub-content-arn
+                StringLike:
+                  aws:RequestTag/sagemaker-sdk:bedrock: compatible
+                  aws:RequestTag/bedrock:marketplace-registration-status: registered
+                  aws:RequestTag/sagemaker-studio:hub-content-arn: >-
+                    arn:aws:sagemaker:*:aws:hub-content/SageMakerPublicHub/Model/*
+            - Sid: MarketplaceModelEndpointDeleteTagsOperations
+              Effect: Allow
+              Action:
+                - sagemaker:DeleteTags
+              Resource:
+                - arn:aws:sagemaker:*:*:endpoint/*
+                - arn:aws:sagemaker:*:*:endpoint-config/*
+                - arn:aws:sagemaker:*:*:model/*
+              Condition:
+                ForAllValues:StringEquals:
+                  aws:TagKeys:
+                    - sagemaker-sdk:bedrock
+                    - bedrock:marketplace-registration-status
+                    - sagemaker-studio:hub-content-arn
+                StringLike:
+                  aws:ResourceTag/sagemaker-sdk:bedrock: compatible
+                  aws:ResourceTag/bedrock:marketplace-registration-status: registered
+                  aws:ResourceTag/sagemaker-studio:hub-content-arn: >-
+                    arn:aws:sagemaker:*:aws:hub-content/SageMakerPublicHub/Model/*
+            - Sid: MarketplaceModelEndpointNonMutatingAPIs
+              Effect: Allow
+              Action:
+                - sagemaker:DescribeEndpoint
+                - sagemaker:DescribeEndpointConfig
+                - sagemaker:DescribeModel
+                - sagemaker:DescribeInferenceComponent
+                - sagemaker:ListEndpoints
+                - sagemaker:ListTags
+              Resource:
+                - arn:aws:sagemaker:*:*:endpoint/*
+                - arn:aws:sagemaker:*:*:endpoint-config/*
+                - arn:aws:sagemaker:*:*:model/*
+              Condition:
+                StringEquals:
+                  aws:CalledViaLast: bedrock.amazonaws.com
+            - Sid: MarketplaceModelEndpointInvokingOperations
+              Effect: Allow
+              Action:
+                - sagemaker:InvokeEndpoint
+                - sagemaker:InvokeEndpointWithResponseStream
+              Resource:
+                - arn:aws:sagemaker:*:*:endpoint/*
+              Condition:
+                StringEquals:
+                  aws:CalledViaLast: bedrock.amazonaws.com
+                  aws:ResourceTag/sagemaker-sdk:bedrock: compatible
+            - Sid: DiscoveringMarketplaceModel
+              Effect: Allow
+              Action:
+                - sagemaker:DescribeHubContent
+              Resource:
+                - arn:aws:sagemaker:*:aws:hub-content/SageMakerPublicHub/Model/*
+                - arn:aws:sagemaker:*:aws:hub/SageMakerPublicHub
+            - Sid: AllowMarketplaceModelsListing
+              Effect: Allow
+              Action:
+                - sagemaker:ListHubContents
+              Resource: arn:aws:sagemaker:*:aws:hub/SageMakerPublicHub
+            - Sid: PassRoleToSageMaker
+              Effect: Allow
+              Action:
+                - iam:PassRole
+              Resource:
+                - arn:aws:iam::*:role/*SageMaker*ForBedrock*
+              Condition:
+                StringEquals:
+                  iam:PassedToService:
+                    - sagemaker.amazonaws.com
+                    - bedrock.amazonaws.com
+            - Sid: PassRoleToBedrock
+              Effect: Allow
+              Action:
+                - iam:PassRole
+              Resource: arn:aws:iam::*:role/*AmazonBedrock*
+              Condition:
+                StringEquals:
+                  iam:PassedToService:
+                    - bedrock.amazonaws.com
+            - Sid: MarketplaceOperationsFromBedrockFor3pModels
+              Effect: Allow
+              Action:
+                - aws-marketplace:Subscribe
+                - aws-marketplace:ViewSubscriptions
+                - aws-marketplace:Unsubscribe
+              Resource: '*'
+              Condition:
+                StringEquals:
+                  aws:CalledViaLast: bedrock.amazonaws.com
+      RecursiveLoop: Terminate
+      SnapStart:
+        ApplyOn: None
+      Events:
+        SQS1:
+          Type: SQS
+          Properties:
+            Queue:
+              Fn::GetAtt:
+                - SQSQueue1
+                - Arn
+            BatchSize: 10
+      RuntimeManagementConfig:
+        UpdateRuntimeOn: Auto
+  SQSQueue1:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: SQSQueue1
+      SqsManagedSseEnabled: true
